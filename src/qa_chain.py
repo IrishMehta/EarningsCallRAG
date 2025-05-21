@@ -1,8 +1,19 @@
 # src/qa_chain.py
 
+"""
+Core QA chain implementation for the Finance RAG system.
+
+This module handles the initialization and management of the RAG components:
+- Language Model (LLM) initialization and caching
+- Vector store loading and management
+- QA chain creation and configuration
+- Confidence score calculation
+"""
+
 import os
 import time
 import math
+import logging
 from typing import Dict, Any, Tuple, List, Optional
 
 # LangChain components
@@ -14,7 +25,10 @@ from langchain_core.vectorstores import VectorStoreRetriever
 
 # Import project modules
 from . import config
-from . import embedding_store # Need this to get embedding model for loading vector store
+from . import embedding_store
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 # --- Global Variables ---
 llm_model = None
@@ -23,7 +37,6 @@ qa_chain_instance = None
 retriever_instance = None
 
 # --- LLM Initialization ---
-
 def get_llm(
     model_name: str = config.LLM_MODEL_NAME,
     api_token: Optional[str] = config.HUGGINGFACEHUB_API_TOKEN,
@@ -31,89 +44,111 @@ def get_llm(
     max_tokens: int = 200
 ) -> HuggingFaceEndpoint:
     """
-    Initializes and returns the Hugging Face Endpoint LLM instance.
-    Caches the model instance globally.
-
+    Initialize and return a Hugging Face Endpoint LLM instance.
+    
+    This function implements singleton pattern to cache the model instance
+    globally and avoid repeated initialization.
+    
     Args:
-        model_name: Name of the model in Hugging Face Hub.
-        api_token: Hugging Face Hub API token.
-        temperature: Controls randomness (0.0 = deterministic).
-        max_tokens: Maximum number of tokens to generate.
-
+        model_name: Name of the model in Hugging Face Hub
+        api_token: Hugging Face Hub API token for authentication
+        temperature: Controls randomness (0.0 = deterministic)
+        max_tokens: Maximum number of tokens to generate
+        
     Returns:
-        An instance of MyHuggingFaceEndpoint (customized HuggingFaceEndpoint).
+        An instance of HuggingFaceEndpoint
+        
+    Raises:
+        ValueError: If API token is not provided
     """
     global llm_model
     if llm_model is None:
-        print(f"Initializing LLM: {model_name}...")
+        logger.info("Initializing LLM", extra={
+            "model": model_name,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        })
+        
         if not api_token:
+            logger.error("Missing API token for LLM initialization")
             raise ValueError("Hugging Face Hub API token is required.")
 
-    llm_model = HuggingFaceEndpoint(
-        repo_id=model_name,  # Choose one from above
-        huggingfacehub_api_token=api_token,
-        temperature=temperature,
-        max_new_tokens=max_tokens,
-        # do_sample=True,  # Only standard parameters
-        task="text-generation",  # Specify task for clarity
-    )
-    print("LLM initialized.")
+        llm_model = HuggingFaceEndpoint(
+            repo_id=model_name,
+            huggingfacehub_api_token=api_token,
+            temperature=temperature,
+            max_new_tokens=max_tokens,
+            task="text-generation"
+        )
+        logger.info("LLM initialized successfully")
+        
     return llm_model
 
-
 # --- Vector Store Loading ---
-
 def load_vector_store(
     persist_directory: str = config.VECTOR_STORE_DIR,
     index_name: str = config.FAISS_INDEX_NAME
 ) -> FAISS:
     """
-    Loads the FAISS vector store from the specified directory.
-    Assumes the index has already been created. Caches globally.
-
+    Load the FAISS vector store from disk.
+    
+    This function implements singleton pattern to cache the vector store
+    instance globally and avoid repeated loading.
+    
     Args:
-        persist_directory: Directory containing the FAISS index.
-        index_name: Name of the FAISS index file (without extension).
-
+        persist_directory: Directory containing the FAISS index
+        index_name: Name of the FAISS index file (without extension)
+        
     Returns:
-        An instance of the loaded FAISS vector store.
-
+        An instance of the loaded FAISS vector store
+        
     Raises:
-        FileNotFoundError: If the vector store index cannot be found.
+        FileNotFoundError: If the vector store index cannot be found
+        Exception: For other loading errors
     """
     global vector_store_instance
     if vector_store_instance is None:
         index_path = os.path.join(persist_directory, f"{index_name}.faiss")
-        print(f"Attempting to load vector store from: {persist_directory} with index name: {index_name}")
+        logger.info("Loading vector store", extra={
+            "directory": persist_directory,
+            "index_name": index_name
+        })
 
         if not os.path.exists(index_path):
-             raise FileNotFoundError(
-                 f"FAISS index file not found at {index_path}. "
-                 f"Please run 'python -m src.embedding_store' first to create it."
-             )
+            logger.error("Vector store index not found", extra={
+                "path": index_path
+            })
+            raise FileNotFoundError(
+                f"FAISS index file not found at {index_path}. "
+                f"Please run 'python -m src.embedding_store' first to create it."
+            )
 
         try:
-            print("Loading embedding model for vector store...")
-            embeddings = embedding_store.get_embedding_model() # Get cached embedding model
-            print("Loading FAISS index from disk...")
+            logger.info("Loading embedding model")
+            embeddings = embedding_store.get_embedding_model()
+            
+            logger.info("Loading FAISS index from disk")
             start_time = time.time()
             vector_store_instance = FAISS.load_local(
                 folder_path=persist_directory,
                 embeddings=embeddings,
                 index_name=index_name,
-                allow_dangerous_deserialization=True # Required for HF embeddings potentially
+                allow_dangerous_deserialization=True
             )
             load_time = time.time() - start_time
-            print(f"Vector store loaded successfully in {load_time:.2f} seconds.")
+            
+            logger.info("Vector store loaded successfully", extra={
+                "duration_seconds": round(load_time, 2)
+            })
         except Exception as e:
-            print(f"Error loading vector store: {e}")
-            raise # Re-raise the exception after logging
+            logger.error("Vector store loading failed", extra={
+                "error": str(e)
+            }, exc_info=True)
+            raise
 
     return vector_store_instance
 
 # --- Prompt Template ---
-
-# Define a prompt template to guide the LLM
 PROMPT_TEMPLATE = """
 You are a helpful AI assistant specialized in answering questions based on financial documents (earnings call transcripts and reports).
 Use the following pieces of context derived from these documents to answer the question at the end.
@@ -129,11 +164,11 @@ Answer:
 """
 
 QA_PROMPT = PromptTemplate(
-    template=PROMPT_TEMPLATE, input_variables=["context", "question"]
+    template=PROMPT_TEMPLATE,
+    input_variables=["context", "question"]
 )
 
 # --- QA Chain Creation ---
-
 def create_qa_chain(
     llm: HuggingFaceEndpoint,
     vector_store: FAISS,
@@ -141,166 +176,189 @@ def create_qa_chain(
     custom_prompt: Optional[PromptTemplate] = QA_PROMPT
 ) -> Tuple[RetrievalQA, VectorStoreRetriever]:
     """
-    Creates the RetrievalQA chain and the retriever.
-
+    Create the RetrievalQA chain and retriever.
+    
+    This function implements singleton pattern to cache the chain and retriever
+    instances globally and avoid repeated creation.
+    
     Args:
-        llm: The initialized language model instance.
-        vector_store: The loaded FAISS vector store instance.
-        k_docs: The number of documents to retrieve.
-        custom_prompt: Optional custom prompt template.
-
+        llm: The initialized language model instance
+        vector_store: The loaded FAISS vector store instance
+        k_docs: Number of documents to retrieve
+        custom_prompt: Optional custom prompt template
+        
     Returns:
-        A tuple containing the RetrievalQA chain instance and the retriever instance.
+        A tuple containing:
+        - RetrievalQA chain instance
+        - VectorStoreRetriever instance
     """
     global qa_chain_instance, retriever_instance
     if qa_chain_instance is None or retriever_instance is None:
-        print(f"Creating retriever to fetch top {k_docs} documents...")
+        logger.info("Creating retriever", extra={
+            "k_docs": k_docs
+        })
+        
         # Create the retriever
         retriever_instance = vector_store.as_retriever(
-            search_type="similarity", # Use standard similarity search
+            search_type="similarity",
             search_kwargs={'k': k_docs}
-            # Note: We perform a separate search for confidence scores later
         )
 
-        print("Creating RetrievalQA chain...")
-        # Configure the chain specifics
+        logger.info("Creating RetrievalQA chain")
+        # Configure the chain
         chain_type_kwargs = {}
         if custom_prompt:
-             chain_type_kwargs["prompt"] = custom_prompt
+            chain_type_kwargs["prompt"] = custom_prompt
 
         qa_chain_instance = RetrievalQA.from_chain_type(
             llm=llm,
-            chain_type="stuff", # Stuffs all retrieved docs into the context
+            chain_type="stuff",
             retriever=retriever_instance,
             chain_type_kwargs=chain_type_kwargs,
-            return_source_documents=True # Essential for seeing what context was used
+            return_source_documents=True
         )
-        print("RetrievalQA chain created.")
+        logger.info("RetrievalQA chain created successfully")
 
     return qa_chain_instance, retriever_instance
 
 # --- Confidence Score Calculation ---
-
 def calculate_confidence_score(
     query: str,
     retriever: VectorStoreRetriever,
     distance_threshold: float = config.DISTANCE_THRESHOLD,
-    k_for_scoring: int = config.K_RETRIEVED_DOCS # Use same k for consistency
+    k_for_scoring: int = config.K_RETRIEVED_DOCS
 ) -> float:
     """
-    Calculates a confidence score based on the L2 distance of retrieved documents.
-
-    Retrieves documents, filters them by the distance threshold, and calculates
-    a score based on the average distance of the filtered documents.
-
+    Calculate confidence score based on document similarity.
+    
+    The confidence score is calculated using the average L2 distance of
+    retrieved documents that fall within the distance threshold.
+    
     Args:
-        query: The user's query.
-        retriever: The vector store retriever instance.
-        distance_threshold: Maximum L2 distance to consider a document relevant.
-        k_for_scoring: Number of documents to retrieve for scoring.
-
+        query: The user's query
+        retriever: The vector store retriever instance
+        distance_threshold: Maximum L2 distance to consider a document relevant
+        k_for_scoring: Number of documents to retrieve for scoring
+        
     Returns:
-        A confidence score between 0.0 and 1.0 (higher is better).
+        A confidence score between 0.0 and 1.0 (higher is better)
     """
-    print(f"\nCalculating confidence score for query: '{query}'")
-    print(f" - Retrieving top {k_for_scoring} docs with scores...")
-    print(f" - Distance threshold for relevance: {distance_threshold}")
+    logger.info("Calculating confidence score", extra={
+        "query": query,
+        "k_docs": k_for_scoring,
+        "distance_threshold": distance_threshold
+    })
 
-    # Retrieve documents with their L2 distance scores
     try:
         docs_with_scores = retriever.vectorstore.similarity_search_with_score(
             query, k=k_for_scoring
         )
     except Exception as e:
-        print(f"Error during similarity search for confidence score: {e}")
-        return 0.0 # Return lowest confidence on error
-
-    if not docs_with_scores:
-        print(" - No documents retrieved for scoring.")
+        logger.error("Similarity search failed", extra={
+            "error": str(e)
+        }, exc_info=True)
         return 0.0
 
-    # Filter documents based on the distance threshold
+    if not docs_with_scores:
+        logger.warning("No documents retrieved for scoring")
+        return 0.0
+
+    # Filter documents based on distance threshold
     relevant_docs_scores = [
         score for doc, score in docs_with_scores if score < distance_threshold
     ]
 
-    print(f" - Found {len(relevant_docs_scores)} documents within distance threshold.")
-    # Print scores for debugging
-    # print(f"   - Scores: {[round(s, 4) for _, s in docs_with_scores]}")
-    # print(f"   - Relevant Scores (< {distance_threshold}): {[round(s, 4) for s in relevant_docs_scores]}")
-
+    logger.info("Documents retrieved for scoring", extra={
+        "total_docs": len(docs_with_scores),
+        "relevant_docs": len(relevant_docs_scores)
+    })
 
     if not relevant_docs_scores:
-        print(" - No relevant documents found within threshold.")
-        return 0.0 # No documents met the criteria
+        logger.warning("No relevant documents found within threshold")
+        return 0.0
 
-    # Calculate the average distance of relevant documents
+    # Calculate average distance of relevant documents
     average_distance = sum(relevant_docs_scores) / len(relevant_docs_scores)
-    print(f" - Average distance of relevant documents: {average_distance:.4f}")
+    logger.debug("Average distance calculated", extra={
+        "average_distance": round(average_distance, 4)
+    })
 
-    # Convert average distance to a confidence score (0-1, higher is better)
-    # Using formula: 1 / (1 + average_distance)
-    # This maps distance [0, inf) to confidence (1, 0] -> approximately [1, 0]
-    # Small distance -> high confidence (close to 1)
-    # Large distance -> low confidence (close to 0)
+    # Convert distance to confidence score (0-1, higher is better)
     confidence = 1.0 / (1.0 + average_distance)
-
-    # Alternative: Clamp linear conversion: max(0.0, 1.0 - average_distance / distance_threshold)
-    # confidence = max(0.0, 1.0 - average_distance / distance_threshold)
-
-    print(f" - Calculated confidence score: {confidence:.4f}")
+    
+    logger.info("Confidence score calculated", extra={
+        "confidence": round(confidence, 4)
+    })
+    
     return confidence
-
-
-# --- Main Query Function ---
 
 def get_answer(query: str) -> Optional[Dict[str, Any]]:
     """
-    Loads components (if needed), runs the QA chain, calculates confidence,
-    and returns the results.
-
+    Process a query through the RAG system and return the answer.
+    
+    This function orchestrates the entire QA process:
+    1. Ensures LLM and vector store are initialized
+    2. Creates/retrieves the QA chain
+    3. Processes the query
+    4. Calculates confidence score
+    5. Returns formatted response
+    
     Args:
-        query: The user's question.
-
+        query: The user's question
+        
     Returns:
-        A dictionary containing 'answer', 'source_documents', and 'confidence_score',
-        or None if an error occurs.
+        Dictionary containing:
+        - query: Original query
+        - answer: Generated answer
+        - confidence_score: Calculated confidence score
+        - source_documents: List of source documents used
+        
+    Raises:
+        Exception: If any step in the process fails
     """
+    logger.info("Processing query", extra={
+        "query": query
+    })
+    
     try:
-        # Ensure all components are loaded/created
+        # Ensure components are initialized
         llm = get_llm()
         vector_store = load_vector_store()
-        chain, retriever = create_qa_chain(llm, vector_store)
-
-        print(f"\nInvoking QA chain for query: '{query}'")
+        
+        # Get or create QA chain
+        qa_chain, retriever = create_qa_chain(llm, vector_store)
+        
+        # Process query
         start_time = time.time()
-        # Run the QA chain
-        result = chain.invoke({"query": query})
-        chain_time = time.time() - start_time
-        print(f"QA chain invocation took {chain_time:.2f} seconds.")
-
-        # Calculate confidence score using the same retriever
+        result = qa_chain({"query": query})
+        process_time = time.time() - start_time
+        
+        logger.info("Query processed", extra={
+            "duration_seconds": round(process_time, 2)
+        })
+        
+        # Calculate confidence score
         confidence = calculate_confidence_score(query, retriever)
-
-        # Structure the final output
-        final_result = {
+        
+        # Format response
+        response = {
             "query": query,
-            "answer": result.get("result", "No answer generated."),
-            # Process source documents for better display if needed
-            "source_documents": result.get("source_documents", []),
-            "confidence_score": confidence
+            "answer": result["result"],
+            "confidence_score": confidence,
+            "source_documents": result["source_documents"]
         }
-        return final_result
-
-    except FileNotFoundError as e:
-         print(f"ERROR: {e}")
-         print("Please ensure the vector store index exists. Run src.embedding_store first.")
-         return None
+        
+        logger.info("Answer generated successfully", extra={
+            "confidence_score": round(confidence, 4)
+        })
+        
+        return response
+        
     except Exception as e:
-        print(f"An unexpected error occurred in get_answer: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return None
+        logger.error("Query processing failed", extra={
+            "error": str(e)
+        }, exc_info=True)
+        raise
 
 # --- Main execution block for testing ---
 if __name__ == "__main__":

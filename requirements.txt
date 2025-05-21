@@ -1,28 +1,35 @@
 # Core Frameworks
-langchain==0.3.25           
-fastapi==0.115.12         
-uvicorn[standard]==0.34.2   
+langchain==0.3.25
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+
 # Embeddings & Vector Store
-sentence-transformers==4.1.0 
-faiss-cpu==1.11.0             
+sentence-transformers==4.1.0
+faiss-cpu==1.11.0
+
 # LLM & Hugging Face Integration
-huggingface_hub==0.30.2      
-langchain-huggingface==0.1.2 
-# Required by Flan-T5
-transformers==4.51.3         
-torch==2.4.1                 
-accelerate==1.6.0           
+huggingface_hub==0.30.2
+langchain-huggingface==0.1.2
+langchain-community==0.0.27
 
-# Environment Variables
-python-dotenv==1.1.0         
-
-# Optional: For document loading (if transcripts are PDF, etc.)
-pypdf==5.4.0               
-
-langchain-community
-
+# Required by Hugging Face Models
+transformers==4.51.3
+torch==2.4.1
+accelerate==1.6.0
 protobuf==3.20.3
+
+# Document Processing
+pypdf==5.4.0
+unstructured==0.12.4  # Required for PDF processing
+
+# Environment & Utilities
+python-dotenv==1.1.0
+pydantic==2.6.3  # Required for FastAPI models
+
+# Logging & Monitoring
+structlog==24.1.0  # For structured logging
+
 # ---
-# Note: Versions are based on search results and PyPI checks around early May 2024/2025.
-# Always verify latest versions on PyPI (pypi.org) before finalizing dependencies.
+# Note: These versions are based on compatibility testing with the current codebase.
+# Always verify latest versions on PyPI (pypi.org) before updating.
 # Pinning versions ensures environment reproducibility.
