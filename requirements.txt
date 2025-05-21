@@ -26,7 +26,6 @@ numpy==1.24.3
 pandas==2.1.3
 tqdm==4.66.1
 
-# ---
-# Note: These versions are based on compatibility testing with the current codebase.
+# Note: These versions are based on compatibility testing with Streamlit Cloud.
 # Always verify latest versions on PyPI (pypi.org) before updating.
 # Pinning versions ensures environment reproducibility.

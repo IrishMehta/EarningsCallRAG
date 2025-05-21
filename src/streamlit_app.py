@@ -3,6 +3,7 @@ import requests
 import json
 from typing import Dict, Any
 import time
+import os
 
 # Page config
 st.set_page_config(
@@ -37,16 +38,26 @@ st.markdown("""
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Get API URL from environment variable or use default
+API_URL = os.getenv("API_URL", "http://localhost:8000")
+
 def query_rag_api(query: str) -> Dict[str, Any]:
     """Query the RAG API endpoint."""
     try:
         response = requests.post(
-            "http://localhost:8000/query",
+            f"{API_URL}/query",
             json={"query": query},
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
+            timeout=30  # Add timeout for better error handling
         )
         response.raise_for_status()
         return response.json()
+    except requests.exceptions.Timeout:
+        st.error("Request timed out. Please try again.")
+        return None
+    except requests.exceptions.ConnectionError:
+        st.error("Could not connect to the API. Please check if the backend is running.")
+        return None
     except Exception as e:
         st.error(f"Error querying API: {str(e)}")
         return None
@@ -114,4 +125,15 @@ with st.sidebar:
     **Models Used:**
     - Embedding: sentence-transformers/all-MiniLM-L6-v2
     - LLM: HuggingFaceH4/zephyr-7b-beta
-    """) 
+    """)
+    
+    # Add deployment status
+    st.header("System Status")
+    try:
+        health_check = requests.get(f"{API_URL}/health", timeout=5)
+        if health_check.status_code == 200:
+            st.success("Backend API is running")
+        else:
+            st.error("Backend API is not responding correctly")
+    except:
+        st.error("Cannot connect to backend API")

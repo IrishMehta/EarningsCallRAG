@@ -98,11 +98,11 @@ Finance RAG Bot is a powerful Retrieval-Augmented Generation system designed spe
 
 ### Deployment
 
-The application is deployed using HuggingFace Spaces:
+The application is deployed using Streamlit Cloud:
 
-### HuggingFace Spaces Configuration
+### Streamlit Cloud Configuration
 
-The project includes the following files for HuggingFace Spaces deployment:
+The project includes the following files for Streamlit Cloud deployment:
 
 - `src/streamlit_app.py`: Streamlit interface for the RAG system
 - `requirements.txt`: Python dependencies
@@ -110,20 +110,12 @@ The project includes the following files for HuggingFace Spaces deployment:
 - `README.md`: Project documentation
 
 To deploy:
-1. Fork this repository
-2. Create a new Space on HuggingFace
-3. Select Streamlit as the SDK
-4. Point to the forked repository
-5. Add your environment variables
-6. Deploy!
-
-The Streamlit interface provides:
-- Real-time chat interface
-- Confidence score display
-- Source document attribution
-- Responsive design
-- Error handling
-- Chat history
+1. Create a Streamlit account at https://streamlit.io
+2. Connect your GitHub repository
+3. Configure your environment variables in Streamlit Cloud:
+   - HUGGINGFACEHUB_API_TOKEN
+   - Any other required API keys
+4. Deploy with one click!
 
 <!-- USAGE -->
 ## Usage
