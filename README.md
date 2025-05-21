@@ -96,6 +96,35 @@ Finance RAG Bot is a powerful Retrieval-Augmented Generation system designed spe
    # Edit .env with your API keys and configuration
    ```
 
+### Deployment
+
+The application is deployed using HuggingFace Spaces:
+
+### HuggingFace Spaces Configuration
+
+The project includes the following files for HuggingFace Spaces deployment:
+
+- `src/streamlit_app.py`: Streamlit interface for the RAG system
+- `requirements.txt`: Python dependencies
+- `.env.example`: Example environment variables
+- `README.md`: Project documentation
+
+To deploy:
+1. Fork this repository
+2. Create a new Space on HuggingFace
+3. Select Streamlit as the SDK
+4. Point to the forked repository
+5. Add your environment variables
+6. Deploy!
+
+The Streamlit interface provides:
+- Real-time chat interface
+- Confidence score display
+- Source document attribution
+- Responsive design
+- Error handling
+- Chat history
+
 <!-- USAGE -->
 ## Usage
 
@@ -220,29 +249,6 @@ finance_rag_bot/
 
 <!-- LOGGING -->
 ## Logging & Observability
-
-The system implements comprehensive logging and observability features:
-
-* **Structured Logging**
-  - JSON-formatted logs for easy parsing
-  - Consistent log levels (INFO, WARNING, ERROR)
-  - Contextual information in log entries
-
-* **Performance Metrics**
-  - Request processing times
-  - Model initialization durations
-  - Vector store operation timings
-
-* **Error Tracking**
-  - Detailed error messages
-  - Stack traces for debugging
-  - Error categorization
-
-* **Request Tracing**
-  - Unique request IDs
-  - End-to-end request tracking
-  - Response timing information
-
 Logs are written to both console and file (`logs/finance_rag.log`).
 
 <!-- MARKDOWN LINKS & IMAGES -->
