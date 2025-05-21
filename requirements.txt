@@ -16,7 +16,9 @@ accelerate==0.24.1
 # Document processing
 PyPDF2==3.0.1
 python-magic==0.4.27
-python-magic-bin==0.4.14
+unstructured==0.12.4
+pdf2image==1.16.3
+pytesseract==0.3.10
 
 # Frontend
 streamlit==1.28.2
