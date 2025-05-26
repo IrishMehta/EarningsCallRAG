@@ -13,17 +13,19 @@ import json
 import logging
 import os
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status, UploadFile, File
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import uvicorn
+import shutil
 
 # Import the core QA logic and config
 from . import qa_chain
 from . import config
+from . import data_processing
 
 # --- Logging Setup ---
 class StructuredLogFormatter(logging.Formatter):
@@ -51,7 +53,7 @@ class StructuredLogFormatter(logging.Formatter):
 
 # Configure root logger
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.INFO)  # Set to INFO level
 
 # Create logs directory if it doesn't exist
 os.makedirs("logs", exist_ok=True)
@@ -59,12 +61,17 @@ os.makedirs("logs", exist_ok=True)
 # Console handler with structured formatting
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(StructuredLogFormatter())
+console_handler.setLevel(logging.DEBUG)  # Set console handler to DEBUG level
 logger.addHandler(console_handler)
 
 # File handler for persistent logging
 file_handler = logging.FileHandler("logs/finance_rag.log")
 file_handler.setFormatter(StructuredLogFormatter())
+file_handler.setLevel(logging.DEBUG)  # Set file handler to DEBUG level
 logger.addHandler(file_handler)
+
+# Set other loggers to DEBUG level
+logging.getLogger('src').setLevel(logging.DEBUG)
 
 # --- Application Setup ---
 app = FastAPI(
@@ -107,10 +114,9 @@ class SourceDocumentModel(BaseModel):
         content_snippet: A relevant excerpt from the source document
     """
     source: Optional[str] = None
-    page_number: Optional[Any] = None # Allow Any type for page number flexibility
+    page_number: Optional[Any] = None  # Allow Any type for page number flexibility
     speaker: Optional[str] = None
-    # Add other relevant metadata fields if available, e.g., 'start_index'
-    content_snippet: Optional[str] = None # Optional: Include a snippet of the source text
+    content_snippet: Optional[str] = None
 
 class QueryResponse(BaseModel):
     """
@@ -219,15 +225,6 @@ async def get_frontend():
 async def handle_query(request: QueryRequest):
     """
     Process a user query using the RAG system.
-    
-    Args:
-        request: The query request containing the user's question
-        
-    Returns:
-        QueryResponse containing the answer, confidence score, and source documents
-        
-    Raises:
-        HTTPException: If there's an error processing the query
     """
     request_id = str(time.time())
     logger.info("Processing query", extra={
@@ -251,26 +248,43 @@ async def handle_query(request: QueryRequest):
             )
 
         process_time = time.time() - start_process
-        logger.info("Query processed successfully", extra={
+        logger.debug("Query processed successfully", extra={
             "request_id": request_id,
             "duration_seconds": round(process_time, 2),
-            "confidence_score": result.get("confidence_score")
+            "confidence_score": result.get("confidence_score"),
+            "has_source_docs": bool(result.get("source_documents"))
         })
 
         # Format source documents for the response model
         formatted_sources = []
         if result.get("source_documents"):
-            for doc in result["source_documents"]:
-                metadata = doc.metadata or {} # Ensure metadata exists
-                formatted_sources.append(
-                    SourceDocumentModel(
-                        source=metadata.get("source"),
-                        page_number=metadata.get("page_number", metadata.get("page")), # Try both keys
-                        speaker=metadata.get("speaker"),
-                        # Optionally add a snippet
-                        # content_snippet=doc.page_content[:100] + "..." if doc.page_content else ""
-                    )
+            for idx, doc in enumerate(result["source_documents"]):
+                # Debug log the document content
+                logger.debug(f"Processing source document {idx + 1}", extra={
+                    "source": doc.metadata.get("source"),
+                    "has_content": bool(doc.page_content),
+                    "content_length": len(doc.page_content) if doc.page_content else 0,
+                    "content_preview": doc.page_content[:100] if doc.page_content else "NO CONTENT"
+                })
+                
+                metadata = doc.metadata or {}  # Ensure metadata exists
+                content = doc.page_content if doc.page_content else ""  # Ensure content exists
+                
+                formatted_doc = SourceDocumentModel(
+                    source=metadata.get("source"),
+                    page_number=metadata.get("page_number", metadata.get("page")),
+                    speaker=metadata.get("speaker"),
+                    content_snippet=content[:500] + "..." if len(content) > 500 else content
                 )
+                
+                # Debug log the formatted document
+                logger.debug(f"Formatted source document {idx + 1}", extra={
+                    "source": formatted_doc.source,
+                    "has_content": bool(formatted_doc.content_snippet),
+                    "content_length": len(formatted_doc.content_snippet) if formatted_doc.content_snippet else 0
+                })
+                
+                formatted_sources.append(formatted_doc)
 
         # Prepare the final response
         response_data = QueryResponse(
@@ -279,14 +293,19 @@ async def handle_query(request: QueryRequest):
             confidence_score=result["confidence_score"],
             source_documents=formatted_sources
         )
+        
+        # Debug log the final response
+        logger.debug("Prepared response", extra={
+            "num_sources": len(formatted_sources),
+            "answer_length": len(response_data.answer)
+        })
+        
         return response_data
 
     except HTTPException as http_exc:
-         # Re-raise HTTPExceptions (like validation errors)
-         raise http_exc
+        raise http_exc
     except Exception as e:
-        # Catch any other unexpected errors during processing
-        logger.error("Query processing error", extra={
+        logger.error("Query processing failed", extra={
             "request_id": request_id,
             "query": request.query,
             "error": str(e)
@@ -306,6 +325,64 @@ async def health_check():
     """
     # Can be expanded later to check component readiness
     return {"status": "ok"}
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Handle file uploads and process them for the RAG system.
+    
+    Args:
+        file: The uploaded file
+        
+    Returns:
+        Dict containing the upload status and processed filename
+    """
+    try:
+        # Validate file extension
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in config.SUPPORTED_EXTENSIONS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type. Supported types: {', '.join(config.SUPPORTED_EXTENSIONS)}"
+            )
+        
+        # Create upload directory if it doesn't exist
+        upload_dir = os.path.join(config.DATA_DIR, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # Save the uploaded file
+        temp_path = os.path.join(upload_dir, file.filename)
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # Process and rename the file
+        processed_dir = os.path.join(config.DATA_DIR, config.PROCESSED_DIR)
+        processed_path = data_processing.process_and_rename_file(temp_path, processed_dir)
+        
+        # Clean up the temporary file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+            
+        # Reload the vector store with the new document
+        qa_chain.reload_vector_store()
+        
+        return {
+            "status": "success",
+            "message": f"File uploaded and processed successfully",
+            "processed_filename": os.path.basename(processed_path)
+        }
+        
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error("File upload failed", extra={
+            "filename": file.filename,
+            "error": str(e)
+        }, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process uploaded file: {str(e)}"
+        )
 
 # --- Main Execution ---
 # This block allows running the app directly using `python -m src.main`

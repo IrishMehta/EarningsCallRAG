@@ -26,6 +26,7 @@ from langchain_core.vectorstores import VectorStoreRetriever
 # Import project modules
 from . import config
 from . import embedding_store
+from . import data_processing
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ PROMPT_TEMPLATE = """
 You are a helpful AI assistant specialized in answering questions based on financial documents (earnings call transcripts and reports).
 Use the following pieces of context derived from these documents to answer the question at the end.
 If you don't find the answer in the provided context, just say that you cannot find the answer in the documents. Do not try to make up an answer.
-Keep the answer concise and relevant to the question.
+Keep the answer very concise and relevant to the question.
 
 Context:
 {context}
@@ -337,6 +338,17 @@ def get_answer(query: str) -> Optional[Dict[str, Any]]:
             "duration_seconds": round(process_time, 2)
         })
         
+        # Log source documents for debugging
+        if result.get("source_documents"):
+            for idx, doc in enumerate(result["source_documents"]):
+                logger.debug(f"Source document {idx + 1}", extra={
+                    "source": doc.metadata.get("source", "Unknown"),
+                    "page": doc.metadata.get("page_number", "N/A"),
+                    "speaker": doc.metadata.get("speaker", "N/A"),
+                    "content_length": len(doc.page_content) if doc.page_content else 0,
+                    "content_preview": doc.page_content[:200] if doc.page_content else "NO CONTENT"
+                })
+        
         # Calculate confidence score
         confidence = calculate_confidence_score(query, retriever)
         
@@ -345,17 +357,78 @@ def get_answer(query: str) -> Optional[Dict[str, Any]]:
             "query": query,
             "answer": result["result"],
             "confidence_score": confidence,
-            "source_documents": result["source_documents"]
+            "source_documents": result.get("source_documents", [])
         }
         
         logger.info("Answer generated successfully", extra={
-            "confidence_score": round(confidence, 4)
+            "confidence_score": round(confidence, 4),
+            "num_sources": len(result.get("source_documents", []))
         })
         
         return response
         
     except Exception as e:
         logger.error("Query processing failed", extra={
+            "error": str(e)
+        }, exc_info=True)
+        raise
+
+def init_qa_components():
+    """Initialize all QA system components."""
+    global vector_store_instance, llm_model, qa_chain_instance, retriever_instance
+    
+    try:
+        # Initialize LLM
+        llm_model = get_llm()
+        
+        # Load or create vector store
+        vector_store_instance = load_vector_store()
+        
+        # Get or create QA chain
+        qa_chain_instance, retriever_instance = create_qa_chain(llm_model, vector_store_instance)
+        
+        logger.info("QA components initialized successfully")
+        
+    except Exception as e:
+        logger.error("Failed to initialize QA components", extra={
+            "error": str(e)
+        }, exc_info=True)
+        raise
+
+def reload_vector_store() -> None:
+    """
+    Reload the vector store with all documents in the data directory.
+    This should be called after new files are uploaded.
+    """
+    global vector_store_instance
+    
+    try:
+        # Load all documents from the data directory
+        documents = data_processing.load_documents()
+        
+        if not documents:
+            logger.warning("No documents found to load into vector store")
+            return
+            
+        # Create new vector store
+        vector_store_instance = FAISS.from_documents(
+            documents,
+            embedding_store.get_embedding_model()
+        )
+        
+        # Save the updated vector store
+        os.makedirs(config.VECTOR_STORE_DIR, exist_ok=True)
+        vector_store_instance.save_local(
+            folder_path=config.VECTOR_STORE_DIR,
+            index_name=config.FAISS_INDEX_NAME
+        )
+        
+        logger.info("Vector store reloaded successfully", extra={
+            "num_documents": len(documents)
+        })
+        
+    except Exception as e:
+        logger.error("Failed to reload vector store", extra={
             "error": str(e)
         }, exc_info=True)
         raise

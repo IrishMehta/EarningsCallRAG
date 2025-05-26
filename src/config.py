@@ -60,6 +60,11 @@ API_HOST = "0.0.0.0"
 # Port number for the FastAPI server
 API_PORT = 8000
 
+# --- File Processing Settings ---
+PROCESSED_DIR = "processed"  # Subdirectory for processed files
+FILE_NAMING_MODEL = "HuggingFaceH4/zephyr-7b-beta"  # Use the same model as your QA system
+SUPPORTED_EXTENSIONS = {'.pdf', '.txt'}  # Supported file extensions
+
 # --- Validation ---
 if not HUGGINGFACEHUB_API_TOKEN:
     logger.error("HUGGINGFACEHUB_API_TOKEN not found in environment variables")

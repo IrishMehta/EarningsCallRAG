@@ -13,19 +13,15 @@ import glob
 import re
 import logging
 from typing import List, Optional
+import shutil
 
 # LangChain document loaders and text splitters
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, UnstructuredPDFLoader
 from langchain.docstore.document import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEndpoint
+from . import config
 
-# Import configuration (using dummy for testing)
-class DummyConfig:
-    """Temporary configuration class for testing."""
-    DATA_DIR = "."
-    CHUNK_SIZE = 1000
-    CHUNK_OVERLAP = 150
-config = DummyConfig()
 
 # --- Constants ---
 PDF_LOADER_MODE = "single"  # Load whole PDF as one Document
@@ -139,108 +135,270 @@ def transcript_semantic_split(doc: Document) -> List[Document]:
     })
     return chunks
 
-def load_documents(source_dir: str = config.DATA_DIR) -> List[Document]:
+def get_standardized_filename(content: str, original_filename: str) -> str:
     """
-    Load documents from the specified directory.
-    
-    Supports loading from:
-    - Text files (.txt)
-    - PDF files (.pdf) in single-document mode
+    Generate a standardized filename based on document content using LLM.
     
     Args:
-        source_dir: Directory containing the documents to load
+        content: The document content to analyze
+        original_filename: Original filename for fallback
         
     Returns:
-        List of loaded and cleaned Document objects
+        Standardized filename in format: CompanyName_QuarterYear.ext
     """
-    logger.info("Loading documents", extra={
-        "directory": source_dir,
-        "pdf_mode": PDF_LOADER_MODE
-    })
+    try:
+        # Initialize LLM with specific prompt for filename generation
+        llm = HuggingFaceEndpoint(
+            repo_id=config.LLM_MODEL_NAME,
+            huggingfacehub_api_token=config.HUGGINGFACEHUB_API_TOKEN,
+            temperature=0.1,
+            max_new_tokens=50
+        )
+        
+        # Create a prompt to extract company and quarter information
+        prompt = f"""
+        Based on the following document excerpt, identify the company name and the fiscal quarter/year discussed.
+        Format the response exactly as: CompanyName_QxFYyy
+        If you can't determine both pieces of information, respond with 'UNKNOWN'.
+        Only provide the formatted name, nothing else.
+
+        Document excerpt:
+        {content[:1000]}  # Use first 1000 characters for analysis
+        """
+        
+        # Get LLM response
+        response = llm.invoke(prompt).strip()
+        
+        if response and response != "UNKNOWN":
+            # Get the original file extension
+            _, ext = os.path.splitext(original_filename)
+            # Add the extension to the LLM-generated name
+            new_filename = f"{response}{ext}"
+            
+            logger.info("Generated standardized filename", extra={
+                "original": original_filename,
+                "new": new_filename
+            })
+            
+            return new_filename
+        else:
+            logger.warning("Could not generate standardized filename", extra={
+                "original": original_filename
+            })
+            return original_filename
+            
+    except Exception as e:
+        logger.error("Error generating filename", extra={
+            "error": str(e),
+            "original": original_filename
+        })
+        return original_filename
+
+def rename_and_move_file(file_path: str, new_name: str, target_dir: str) -> str:
+    """
+    Rename and move a file to the target directory.
     
-    # Find all supported files
-    all_files = []
+    Args:
+        file_path: Path to the original file
+        new_name: New filename
+        target_dir: Target directory for the renamed file
+        
+    Returns:
+        Path to the renamed file
+    """
+    try:
+        # Create target directory if it doesn't exist
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # Generate the new file path
+        new_path = os.path.join(target_dir, new_name)
+        
+        # If file with new name already exists, add a number suffix
+        counter = 1
+        while os.path.exists(new_path):
+            base, ext = os.path.splitext(new_name)
+            new_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+            counter += 1
+        
+        # Copy the file to new location with new name
+        shutil.copy2(file_path, new_path)
+        
+        logger.info("File renamed and moved", extra={
+            "original": file_path,
+            "new": new_path
+        })
+        
+        return new_path
+        
+    except Exception as e:
+        logger.error("Error renaming file", extra={
+            "error": str(e),
+            "original": file_path,
+            "new_name": new_name
+        })
+        return file_path
+
+def process_and_rename_file(file_path: str, target_dir: str) -> str:
+    """
+    Process a file and rename it based on its content.
+    
+    Args:
+        file_path: Path to the file to process
+        target_dir: Target directory for renamed files
+        
+    Returns:
+        Path to the processed and renamed file
+    """
+    try:
+        # Load the file content
+        file_ext = os.path.splitext(file_path)[1].lower()
+        if file_ext == '.pdf':
+            loader = UnstructuredPDFLoader(file_path)
+        else:
+            loader = TextLoader(file_path)
+            
+        documents = loader.load()
+        
+        if not documents:
+            logger.warning("No content found in file", extra={"file": file_path})
+            return file_path
+            
+        # Combine all document content for analysis
+        combined_content = "\n".join(doc.page_content for doc in documents)
+        
+        # Generate standardized filename
+        new_name = get_standardized_filename(combined_content, os.path.basename(file_path))
+        
+        # Rename and move the file
+        return rename_and_move_file(file_path, new_name, target_dir)
+        
+    except Exception as e:
+        logger.error("Error processing file", extra={
+            "error": str(e),
+            "file": file_path
+        })
+        return file_path
+
+def load_documents(source_dir_root: str = config.DATA_DIR) -> List[Document]:
+    logger.info("Starting document loading and processing pipeline", extra={"source_dir_root": source_dir_root})
+
+    processed_dir = os.path.join(source_dir_root, config.PROCESSED_DIR)
+    # Ensure the processed directory exists
+    os.makedirs(processed_dir, exist_ok=True)
+
+    # --- Step 1: Process raw files from the root of source_dir_root ---
+    # These are files manually added to config.DATA_DIR, not yet in processed_dir.
+    raw_files_found = []
+    abs_source_dir_root = os.path.abspath(source_dir_root)
+
+    # Iterate over items in the root of source_dir_root
+    for item_name in os.listdir(abs_source_dir_root):
+        item_path = os.path.join(abs_source_dir_root, item_name)
+        # Check if it's a file and has a supported extension
+        if os.path.isfile(item_path):
+            file_ext = os.path.splitext(item_name)[1].lower()
+            if file_ext in SUPPORTED_EXTENSIONS:
+                raw_files_found.append(item_path)
+        # We explicitly ignore subdirectories like 'processed' or 'uploads' in this step,
+        # as 'processed' is the target and 'uploads' are handled by the /upload endpoint.
+
+    if raw_files_found:
+        logger.info(f"Found {len(raw_files_found)} raw files in '{abs_source_dir_root}' to process into '{processed_dir}'.")
+        for raw_file_path in raw_files_found:
+            logger.debug(f"Processing and renaming raw file: {raw_file_path}")
+            try:
+                # process_and_rename_file copies the file to processed_dir with a new name
+                # and returns the path to the new file in processed_dir.
+                # Its return value isn't strictly needed here as we scan processed_dir later.
+                process_and_rename_file(raw_file_path, processed_dir)
+            except Exception as e:
+                logger.error(f"Failed to process raw file {raw_file_path}", extra={"error": str(e)}, exc_info=True)
+    else:
+        logger.info(f"No raw files found directly in '{abs_source_dir_root}' for initial processing into '{processed_dir}'.")
+
+    # --- Step 2: Load all documents exclusively from the processed_dir ---
+    # This directory should now contain all renamed files (from raw files processed above and UI uploads).
+    
+    final_files_to_load = []
     for ext in SUPPORTED_EXTENSIONS:
-        abs_source_dir = os.path.abspath(source_dir)
-        search_pattern = os.path.join(abs_source_dir, f"**/*{ext}")
-        logger.debug("Searching for files", extra={
-            "pattern": search_pattern
-        })
-        all_files.extend(glob.glob(search_pattern, recursive=True))
+        # Search recursively within processed_dir for supported file types
+        search_pattern = os.path.join(processed_dir, f"**/*{ext}")
+        found_in_processed = glob.glob(search_pattern, recursive=True)
+        # Ensure we only add actual files, not directories if glob pattern is too loose
+        final_files_to_load.extend(f for f in found_in_processed if os.path.isfile(f))
 
-    abs_source_dir_norm = os.path.normpath(abs_source_dir)
-    all_files = [f for f in all_files if os.path.normpath(os.path.dirname(f)).startswith(abs_source_dir_norm)]
+    # Deduplicate based on absolute paths to handle any OS-specific path variations from glob
+    final_files_to_load = sorted(list(set(os.path.normpath(f) for f in final_files_to_load)))
 
-    logger.info("Files found", extra={
-        "total_files": len(all_files)
+    logger.info("Files to load from processed directory", extra={
+        "directory": processed_dir,
+        "total_files": len(final_files_to_load)
     })
-    
-    if not all_files:
-        logger.warning("No supported files found", extra={
-            "directory": abs_source_dir
-        })
+
+    if not final_files_to_load:
+        logger.warning("No supported files found in processed directory to load.", extra={"directory": processed_dir})
         return []
 
-    # Load and process each file
+    # --- Step 3: Load and process documents from the final list ---
     documents = []
-    for file_path in all_files:
+    for file_path in final_files_to_load: # file_path is now guaranteed to be from processed_dir
         file_ext = os.path.splitext(file_path)[1].lower()
+        # This check is slightly redundant due to glob pattern using extensions, but ensures safety.
         if file_ext in SUPPORTED_EXTENSIONS:
             loader_factory = SUPPORTED_EXTENSIONS[file_ext]
+            # Determine loader name for logging
             loader_name = 'UnstructuredPDFLoader' if file_ext == '.pdf' else loader_factory.__name__
             
-            logger.info("Loading file", extra={
-                "file": os.path.basename(file_path),
+            logger.info("Loading file from processed directory", extra={
+                "file": os.path.basename(file_path), # This will be the renamed filename
+                "full_path": file_path,
                 "loader": loader_name
             })
             
             try:
                 loader = loader_factory(file_path)
-                loaded_docs = loader.load()
-                processed_docs = []
+                loaded_docs_for_file = loader.load()
+                processed_docs_for_file = []
 
-                for i, doc in enumerate(loaded_docs):
+                for i, doc in enumerate(loaded_docs_for_file):
                     if not doc.page_content or not doc.page_content.strip():
-                        logger.warning("Skipping empty document", extra={
+                        logger.warning("Skipping empty document section", extra={
                             "file": os.path.basename(file_path),
-                            "section": i+1
+                            "section_index": i + 1
                         })
                         continue
 
-                    # Add source metadata and clean text
+                    # CRITICAL: Set source metadata to the basename of the (renamed) file from processed_dir
                     doc.metadata["source"] = os.path.basename(file_path)
                     original_len = len(doc.page_content)
                     doc.page_content = clean_text(doc.page_content)
-                    cleaned_len = len(doc.page_content)
 
                     if not doc.page_content:
-                        logger.warning("Document became empty after cleaning", extra={
+                        logger.warning("Document section became empty after cleaning", extra={
                             "file": os.path.basename(file_path),
-                            "section": i+1,
+                            "section_index": i + 1,
                             "original_length": original_len
                         })
                         continue
+                    
+                    # Optionally, add the full path of the processed file to metadata for reference
+                    doc.metadata["processed_file_path"] = file_path
+                    processed_docs_for_file.append(doc)
 
-                    processed_docs.append(doc)
-
-                documents.extend(processed_docs)
-                logger.info("File processed", extra={
+                documents.extend(processed_docs_for_file)
+                logger.info("File loaded and processed", extra={
                     "file": os.path.basename(file_path),
-                    "num_docs": len(processed_docs)
+                    "num_document_objects": len(processed_docs_for_file)
                 })
                 
             except Exception as e:
-                logger.error("Error loading file", extra={
+                logger.error("Error loading file from processed directory", extra={
                     "file": file_path,
                     "error": str(e)
                 }, exc_info=True)
-        else:
-            logger.warning("Unsupported file type", extra={
-                "file": file_path
-            })
 
-    logger.info("Document loading complete", extra={
-        "total_documents": len(documents)
+    logger.info("Document loading complete from processed directory", extra={
+        "total_document_objects": len(documents)
     })
     return documents
 

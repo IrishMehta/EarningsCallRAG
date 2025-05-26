@@ -98,24 +98,52 @@ Finance RAG Bot is a powerful Retrieval-Augmented Generation system designed spe
 
 ### Deployment
 
-The application is deployed using Streamlit Cloud:
+The application consists of two components that need to be deployed separately:
 
-### Streamlit Cloud Configuration
+#### 1. Backend Deployment (FastAPI)
 
-The project includes the following files for Streamlit Cloud deployment:
+Deploy the FastAPI backend to a cloud service of your choice:
 
-- `src/streamlit_app.py`: Streamlit interface for the RAG system
-- `requirements.txt`: Python dependencies
-- `.env.example`: Example environment variables
-- `README.md`: Project documentation
+1. **Heroku**:
+   ```bash
+   # Create a Procfile
+   echo "web: uvicorn src.main:app --host 0.0.0.0 --port $PORT" > Procfile
+   
+   # Create runtime.txt
+   echo "python-3.11.0" > runtime.txt
+   
+   # Deploy to Heroku
+   heroku create your-app-name
+   git push heroku main
+   ```
 
-To deploy:
+2. **DigitalOcean App Platform**:
+   - Create a new app
+   - Connect your GitHub repository
+   - Set the run command: `uvicorn src.main:app --host 0.0.0.0 --port $PORT`
+   - Add environment variables from `.env`
+
+3. **HuggingFace Spaces**:
+   - Create a new Space
+   - Choose FastAPI as the SDK
+   - Set the main file to `src/main.py`
+   - Add environment variables
+
+#### 2. Frontend Deployment (Streamlit)
+
 1. Create a Streamlit account at https://streamlit.io
 2. Connect your GitHub repository
 3. Configure your environment variables in Streamlit Cloud:
-   - HUGGINGFACEHUB_API_TOKEN
-   - Any other required API keys
-4. Deploy with one click!
+   - `HUGGINGFACEHUB_API_TOKEN`: Your HuggingFace API token
+   - `API_URL`: The URL of your deployed backend (e.g., `https://your-backend.herokuapp.com`)
+4. Deploy with one click
+
+#### Important Notes
+
+- The backend must be deployed and running before the frontend can work
+- Ensure CORS is properly configured in the backend to allow requests from your Streamlit app
+- Keep your API tokens and sensitive information in environment variables
+- Monitor both frontend and backend logs for any issues
 
 <!-- USAGE -->
 ## Usage
